@@ -16,6 +16,7 @@
 package vfs
 
 import (
+	"fmt"
 	"math/rand"
 	"runtime"
 	"sync"
@@ -69,6 +70,8 @@ func (s *sliceWriter) prepareID(ctx meta.Context, retry bool) {
 		var id uint64
 		f.Unlock()
 		st := f.w.m.NewChunk(ctx, f.inode, s.chunk.indx, s.off, &id)
+		fmt.Printf("sliceWriter.prepareID.NewChunk: s.id=%d, f.inode=%d, s.chunk.indx=%d, s.off=%d, st=%d, id=%d\n",
+			s.id, f.inode, s.chunk.indx, s.off, st, id)
 		f.Lock()
 		if st != 0 && st != syscall.EIO {
 			s.err = st
@@ -81,7 +84,7 @@ func (s *sliceWriter) prepareID(ctx meta.Context, retry bool) {
 			break
 		}
 		f.Unlock()
-		logger.Debugf("meta is not available: %s", st)
+		fmt.Printf("meta is not available: %s\n", st)
 		time.Sleep(time.Millisecond * 100)
 		f.Lock()
 	}
@@ -112,6 +115,8 @@ func (s *sliceWriter) flushData() {
 		return
 	}
 	s.length = s.slen
+	fmt.Printf("sliceWriter.flushData: s.id=%d, f.inode=%d, s.chunk.indx=%d, s.off=%d\n, s.slen=%d\n",
+		s.id, s.chunk.file.inode, s.chunk.indx, s.off, s.slen)
 	if err := s.writer.Finish(int(s.length)); err != nil {
 		logger.Errorf("upload chunk %v (length: %v) fail: %s", s.id, s.length, err)
 		s.writer.Abort()
@@ -158,10 +163,13 @@ type chunkWriter struct {
 // protected by file
 func (c *chunkWriter) findWritableSlice(pos uint32, size uint32) *sliceWriter {
 	blockSize := uint32(c.file.w.blockSize)
+	fmt.Printf("fileWriter.findWritableSlice blockSize=%d, len(c.slices)=%d\n", blockSize, len(c.slices))
 	for i := range c.slices {
+		// 招到最后一个slices
 		s := c.slices[len(c.slices)-1-i]
 		if !s.freezed {
 			flushoff := s.slen / blockSize * blockSize
+			fmt.Printf("fileWriter.findWritableSlice s not freezed, flushoff=%d, s.off=%d, s.slen=%d\n", flushoff, s.off, s.slen)
 			if pos >= s.off+flushoff && pos <= s.off+s.slen {
 				return s
 			} else if i > 3 {
@@ -184,8 +192,10 @@ func (c *chunkWriter) commitThread() {
 	f.Lock()
 	defer f.Unlock()
 	// the slices should be committed in the order that are created
+	fmt.Printf("chunkWriter.commitThread: len(c.slices)=%d\n", len(c.slices))
 	for len(c.slices) > 0 {
 		s := c.slices[0]
+		fmt.Printf("chunkWriter.commitThread: s.done=%b\n", s.done)
 		for !s.done {
 			if s.notify.WaitWithTimeout(time.Millisecond*100) && !s.freezed && time.Since(s.started) > flushDuration*2 {
 				s.freezed = true
@@ -234,6 +244,7 @@ type fileWriter struct {
 // protected by file
 func (f *fileWriter) findChunk(i uint32) *chunkWriter {
 	c := f.chunks[i]
+	fmt.Printf("fileWriter.findChunk chunk.i=%d, c==nil?:%s\n", i, c == nil)
 	if c == nil {
 		c = &chunkWriter{indx: i, file: f}
 		f.chunks[i] = c
@@ -253,6 +264,7 @@ func (f *fileWriter) freeChunk(c *chunkWriter) {
 func (f *fileWriter) writeChunk(ctx meta.Context, indx uint32, off uint32, data []byte) syscall.Errno {
 	c := f.findChunk(indx)
 	s := c.findWritableSlice(off, uint32(len(data)))
+	fmt.Printf("fileWriter.writeChunk: s==nil?%b\n", s==nil)
 	if s == nil {
 		s = &sliceWriter{
 			chunk:   c,
@@ -262,6 +274,7 @@ func (f *fileWriter) writeChunk(ctx meta.Context, indx uint32, off uint32, data 
 			started: time.Now(),
 		}
 		c.slices = append(c.slices, s)
+		fmt.Printf("fileWriter.writeChunk: len(c.slices)=%d\n", len(c.slices))
 		if len(c.slices) == 1 {
 			f.w.Lock()
 			f.refs++
@@ -269,6 +282,7 @@ func (f *fileWriter) writeChunk(ctx meta.Context, indx uint32, off uint32, data 
 			go c.commitThread()
 		}
 	}
+	fmt.Printf("fileWriter.writeChunk: off=%d, s.off=%d, len(data)=%d\n", off, s.off, len(data))
 	return s.write(ctx, off-s.off, data)
 }
 
@@ -287,12 +301,15 @@ func (w *dataWriter) usedBufferSize() int64 {
 }
 
 func (f *fileWriter) Write(ctx meta.Context, off uint64, data []byte) syscall.Errno {
+	fmt.Printf("fileWriter.Write off=%d, len=%d\n", off, len(data))
 	for {
 		if f.totalSlices() < 1000 {
 			break
 		}
 		time.Sleep(time.Millisecond)
 	}
+	fmt.Printf("fileWriter.Write f.totalSlices()=%d, f.w.usedBufferSize()=%d, f.w.bufferSize=%d\n",
+		f.totalSlices(), f.w.usedBufferSize(), f.w.bufferSize)
 	if f.w.usedBufferSize() > f.w.bufferSize {
 		// slow down
 		time.Sleep(time.Millisecond * 10)
@@ -306,6 +323,7 @@ func (f *fileWriter) Write(ctx meta.Context, off uint64, data []byte) syscall.Er
 	defer f.Unlock()
 	size := uint64(len(data))
 	f.writewaiting++
+	fmt.Printf("fileWriter.Write f.flushwaiting=%d\n", f.flushwaiting)
 	for f.flushwaiting > 0 {
 		if f.writecond.WaitWithTimeout(time.Second) && ctx.Canceled() {
 			f.writewaiting--
@@ -315,17 +333,18 @@ func (f *fileWriter) Write(ctx meta.Context, off uint64, data []byte) syscall.Er
 	}
 	f.writewaiting--
 
-	indx := uint32(off / meta.ChunkSize)
-	pos := uint32(off % meta.ChunkSize)
+	indx := uint32(off / meta.ChunkSize) //第indx个块
+	pos := uint32(off % meta.ChunkSize) //块里的位置
 	for len(data) > 0 {
-		n := uint32(len(data))
+		fmt.Printf("fileWriter.Write indx=%d, pos=%d, size=%d\n", indx, pos, len(data))
+		n := uint32(len(data)) // 写入数据的长度
 		if pos+n > meta.ChunkSize {
 			n = meta.ChunkSize - pos
 		}
 		if st := f.writeChunk(ctx, indx, pos, data[:n]); st != 0 {
 			return st
 		}
-		data = data[n:]
+		data = data[n:] // 写剩余数据
 		indx++
 		pos = (pos + n) % meta.ChunkSize
 	}
@@ -351,6 +370,7 @@ func (f *fileWriter) flush(ctx meta.Context, writeback bool) syscall.Errno {
 		for _, c := range f.chunks {
 			for _, s := range c.slices {
 				if !s.freezed {
+					fmt.Printf("do freezed here \n")
 					s.freezed = true
 					go s.flushData()
 				}

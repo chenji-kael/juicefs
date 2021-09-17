@@ -71,6 +71,7 @@ func main() {
 		Commands: []*cli.Command{
 			formatFlags(),
 			mountFlags(),
+			rmountFlags(),
 			umountFlags(),
 			gatewayFlags(),
 			syncFlags(),

@@ -138,6 +138,72 @@ func mount_flags() []cli.Flag {
 	}
 }
 
+func rmount_flags() []cli.Flag {
+	var defaultConfigDir = "/etc/hufs"
+	var defaultLogDir = "/var/log"
+	switch runtime.GOOS {
+	case "windows":
+		fallthrough
+	case "darwin":
+		homeDir, err := os.UserHomeDir()
+		if err != nil {
+			logger.Fatalf("%v", err)
+			return nil
+		}
+		defaultLogDir = path.Join(homeDir, ".juicefs")
+		defaultConfigDir = defaultLogDir
+	}
+	return []cli.Flag{
+		&cli.StringFlag{
+			Name: "remote",
+			Aliases: []string{"r"},
+			Value: "http://localhost:8080",
+		},
+		&cli.BoolFlag{
+			Name:    "d",
+			Aliases: []string{"background"},
+			Usage:   "run in background",
+		},
+		&cli.BoolFlag{
+			Name:  "no-syslog",
+			Usage: "disable syslog",
+		},
+		&cli.StringFlag{
+			Name:  "conf",
+			Value: defaultConfigDir,
+			Usage: "path of config file",
+		},
+		&cli.StringFlag{
+			Name:  "log",
+			Value: path.Join(defaultLogDir, "juicefs.log"),
+			Usage: "path of log file when running in background",
+		},
+		&cli.StringFlag{
+			Name:  "o",
+			Usage: "other FUSE options",
+		},
+		&cli.Float64Flag{
+			Name:  "attr-cache",
+			Value: 1.0,
+			Usage: "attributes cache timeout in seconds",
+		},
+		&cli.Float64Flag{
+			Name:  "entry-cache",
+			Value: 1.0,
+			Usage: "file entry cache timeout in seconds",
+		},
+		&cli.Float64Flag{
+			Name:  "dir-entry-cache",
+			Value: 1.0,
+			Usage: "dir entry cache timeout in seconds",
+		},
+		&cli.BoolFlag{
+			Name:  "enable-xattr",
+			Usage: "enable extended attributes (xattr)",
+		},
+	}
+}
+
 func disableUpdatedb() {
 	path := "/etc/updatedb.conf"
 	data, err := ioutil.ReadFile(path)

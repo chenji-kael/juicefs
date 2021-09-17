@@ -104,6 +104,8 @@ func (c *rChunk) blockSize(indx int) int {
 }
 
 func (c *rChunk) key(indx int) string {
+	fmt.Printf("rChunk.key: conf.partition=%d, conf.blocksize=%d, c.id=%d, c.length=%d, c.blockSize(%d)=%d\n",
+		c.store.conf.Partitions, c.store.conf.BlockSize, c.id, c.length, indx, c.blockSize(indx))
 	if c.store.conf.Partitions > 1 {
 		return fmt.Sprintf("chunks/%02X/%v/%v_%v_%v", c.id%256, c.id/1000/1000, c.id, indx, c.blockSize(indx))
 	}
@@ -506,7 +508,7 @@ func (c *wChunk) upload(indx int) {
 	pages := c.pages[indx]
 	c.pages[indx] = nil
 	c.pendings++
-
+	fmt.Printf("wChunk.upload: blen=%d, key=%s, len(pages)=%d\n", blen, key, len(pages))
 	go func() {
 		var block *Page
 		if len(pages) == 1 {
@@ -553,12 +555,14 @@ func (c *wChunk) Len() int {
 }
 
 func (c *wChunk) FlushTo(offset int) error {
+	fmt.Printf("wChunk.FlushTo: offset=%d, c.uploaded=%d, len(c.pages)=%d\n", offset, c.uploaded, len(c.pages))
 	if offset < c.uploaded {
 		logger.Fatalf("Invalid offset: %d < %d", offset, c.uploaded)
 	}
 	for i, block := range c.pages {
 		start := i * c.store.conf.BlockSize
 		end := start + c.store.conf.BlockSize
+		fmt.Printf("wChunk.FlushTo: block[%d], start=%d, end=%d\n", i, start, end)
 		if start >= c.uploaded && end <= offset {
 			if block != nil {
 				c.upload(i)
@@ -574,8 +578,8 @@ func (c *wChunk) Finish(length int) error {
 	if c.length != length {
 		return fmt.Errorf("Length mismatch: %v != %v", c.length, length)
 	}
-
 	n := (length-1)/c.store.conf.BlockSize + 1
+	fmt.Printf("wChunk.Finish: length=%d, c.store.conf.BlockSize=%d, n=%d\n", length, c.store.conf.BlockSize, n)
 	if err := c.FlushTo(n * c.store.conf.BlockSize); err != nil {
 		return err
 	}
@@ -693,10 +697,10 @@ func NewCachedStore(storage object.ObjectStorage, config Config) ChunkStore {
 		logger.Fatalf("unknown compress algorithm: %s", config.Compress)
 	}
 	if config.GetTimeout == 0 {
-		config.GetTimeout = time.Second * 60
+		config.GetTimeout = time.Second * 60000
 	}
 	if config.PutTimeout == 0 {
-		config.PutTimeout = time.Second * 60
+		config.PutTimeout = time.Second * 60000
 	}
 	store := &cachedStore{
 		storage:       storage,
@@ -757,6 +761,7 @@ func NewCachedStore(storage object.ObjectStorage, config Config) ChunkStore {
 				} else {
 					time.Sleep(store.conf.UploadDelay)
 				}
+				// 上传配置了延迟上传的本地文件到S3
 				store.uploadDelayedStaging()
 			}
 		}()

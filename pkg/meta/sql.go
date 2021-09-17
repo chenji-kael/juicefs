@@ -624,6 +624,7 @@ func (m *dbMeta) flushStats() {
 }
 
 func (m *dbMeta) StatFS(ctx Context, totalspace, availspace, iused, iavail *uint64) syscall.Errno {
+	fmt.Println("### DB StatFS ###", *totalspace, *availspace, *iused, *iavail)
 	defer timeit(time.Now())
 	usedSpace := atomic.LoadInt64(&m.newSpace)
 	inodes := atomic.LoadInt64(&m.newInodes)
@@ -675,6 +676,7 @@ func (m *dbMeta) StatFS(ctx Context, totalspace, availspace, iused, iavail *uint
 }
 
 func (m *dbMeta) Lookup(ctx Context, parent Ino, name string, inode *Ino, attr *Attr) syscall.Errno {
+	fmt.Println("### DB Lookup ###", parent, name, *inode)
 	defer timeit(time.Now())
 	parent = m.checkRoot(parent)
 	dbSession := m.engine.Table(&edge{})
@@ -711,10 +713,12 @@ func (m *dbMeta) Lookup(ctx Context, parent Ino, name string, inode *Ino, attr *
 }
 
 func (r *dbMeta) Resolve(ctx Context, parent Ino, path string, inode *Ino, attr *Attr) syscall.Errno {
+	fmt.Println("### DB Resolve ###")
 	return syscall.ENOTSUP
 }
 
 func (m *dbMeta) Access(ctx Context, inode Ino, mmask uint8, attr *Attr) syscall.Errno {
+	fmt.Println("### DB Access ###", inode, mmask, "ctx:", ctx.Uid(), ctx.Gid())
 	if ctx.Uid() == 0 {
 		return 0
 	}
@@ -738,6 +742,7 @@ func (m *dbMeta) Access(ctx Context, inode Ino, mmask uint8, attr *Attr) syscall
 }
 
 func (m *dbMeta) GetAttr(ctx Context, inode Ino, attr *Attr) syscall.Errno {
+	fmt.Println("### DB GetAttr ###", inode, "ctx:", ctx.Uid(), ctx.Gid())
 	inode = m.checkRoot(inode)
 	if m.conf.OpenCache > 0 && m.of.Check(inode, attr) {
 		return 0
@@ -766,6 +771,7 @@ func (m *dbMeta) GetAttr(ctx Context, inode Ino, attr *Attr) syscall.Errno {
 }
 
 func (m *dbMeta) SetAttr(ctx Context, inode Ino, set uint16, sugidclearmode uint8, attr *Attr) syscall.Errno {
+	fmt.Println("### DB SetAttr ###", inode, set, "ctx:", ctx.Uid(), ctx.Gid())
 	defer timeit(time.Now())
 	inode = m.checkRoot(inode)
 	defer func() { m.of.InvalidateChunk(inode, 0xFFFFFFFE) }()
@@ -856,6 +862,7 @@ func (m *dbMeta) appendSlice(s *xorm.Session, inode Ino, indx uint32, buf []byte
 }
 
 func (m *dbMeta) Truncate(ctx Context, inode Ino, flags uint8, length uint64, attr *Attr) syscall.Errno {
+	fmt.Println("### DB Truncate ###", inode, length, "ctx:", ctx.Uid(), ctx.Gid())
 	defer timeit(time.Now())
 	f := m.of.find(inode)
 	if f != nil {
@@ -940,6 +947,7 @@ func (m *dbMeta) Truncate(ctx Context, inode Ino, flags uint8, length uint64, at
 }
 
 func (m *dbMeta) Fallocate(ctx Context, inode Ino, mode uint8, off uint64, size uint64) syscall.Errno {
+	fmt.Println("### DB Fallocate ###", inode, mode, off, size, "ctx:", ctx.Uid(), ctx.Gid())
 	if mode&fallocCollapesRange != 0 && mode != fallocCollapesRange {
 		return syscall.EINVAL
 	}
@@ -1025,6 +1033,7 @@ func (m *dbMeta) Fallocate(ctx Context, inode Ino, mode uint8, off uint64, size 
 }
 
 func (m *dbMeta) ReadLink(ctx Context, inode Ino, path *[]byte) syscall.Errno {
+	fmt.Println("### DB ReadLink ###", inode, string(*path), "ctx:", ctx.Uid(), ctx.Gid())
 	if target, ok := m.symlinks.Load(inode); ok {
 		*path = target.([]byte)
 		return 0
@@ -1044,11 +1053,13 @@ func (m *dbMeta) ReadLink(ctx Context, inode Ino, path *[]byte) syscall.Errno {
 }
 
 func (m *dbMeta) Symlink(ctx Context, parent Ino, name string, path string, inode *Ino, attr *Attr) syscall.Errno {
+	fmt.Println("### DB Symlink ###", parent, name, path, *inode, "ctx:", ctx.Uid(), ctx.Gid())
 	defer timeit(time.Now())
 	return m.mknod(ctx, parent, name, TypeSymlink, 0644, 022, 0, path, inode, attr)
 }
 
 func (m *dbMeta) Mknod(ctx Context, parent Ino, name string, _type uint8, mode, cumask uint16, rdev uint32, inode *Ino, attr *Attr) syscall.Errno {
+	fmt.Println("### DB Mknod ###", parent, name, _type, mode, cumask, rdev, *inode, "ctx:", ctx.Uid(), ctx.Gid())
 	defer timeit(time.Now())
 	return m.mknod(ctx, parent, name, _type, mode, cumask, rdev, "", inode, attr)
 }
@@ -1176,11 +1187,13 @@ func (m *dbMeta) mknod(ctx Context, parent Ino, name string, _type uint8, mode, 
 }
 
 func (m *dbMeta) Mkdir(ctx Context, parent Ino, name string, mode uint16, cumask uint16, copysgid uint8, inode *Ino, attr *Attr) syscall.Errno {
+	fmt.Println("### DB Mkdir ###", parent, name, mode, cumask, *inode, "ctx:", ctx.Uid(), ctx.Gid())
 	defer timeit(time.Now())
 	return m.mknod(ctx, parent, name, TypeDirectory, mode, cumask, 0, "", inode, attr)
 }
 
 func (m *dbMeta) Create(ctx Context, parent Ino, name string, mode uint16, cumask uint16, flags uint32, inode *Ino, attr *Attr) syscall.Errno {
+	fmt.Println("### DB Create ###", parent, name, mode, cumask, flags, *inode, "ctx:", ctx.Uid(), ctx.Gid())
 	defer timeit(time.Now())
 	if attr == nil {
 		attr = &Attr{}
@@ -1196,6 +1209,7 @@ func (m *dbMeta) Create(ctx Context, parent Ino, name string, mode uint16, cumas
 }
 
 func (m *dbMeta) Unlink(ctx Context, parent Ino, name string) syscall.Errno {
+	fmt.Println("### DB Unlink ###", parent, name, "ctx:", ctx.Uid(), ctx.Gid())
 	defer timeit(time.Now())
 	parent = m.checkRoot(parent)
 	var newSpace, newInode int64
@@ -1319,6 +1333,7 @@ func (m *dbMeta) Unlink(ctx Context, parent Ino, name string) syscall.Errno {
 }
 
 func (m *dbMeta) Rmdir(ctx Context, parent Ino, name string) syscall.Errno {
+	fmt.Println("### DB Rmdir ###", parent, name, "ctx:", ctx.Uid(), ctx.Gid())
 	if name == "." {
 		return syscall.EINVAL
 	}
@@ -1402,6 +1417,7 @@ func (m *dbMeta) Rmdir(ctx Context, parent Ino, name string) syscall.Errno {
 }
 
 func (m *dbMeta) Rename(ctx Context, parentSrc Ino, nameSrc string, parentDst Ino, nameDst string, inode *Ino, attr *Attr) syscall.Errno {
+	fmt.Println("### DB Rename ###", parentSrc, nameSrc, parentDst, nameDst, inode, "ctx:", ctx.Uid(), ctx.Gid())
 	defer timeit(time.Now())
 	parentSrc = m.checkRoot(parentSrc)
 	parentDst = m.checkRoot(parentDst)
@@ -1614,6 +1630,7 @@ func (m *dbMeta) Rename(ctx Context, parentSrc Ino, nameSrc string, parentDst In
 }
 
 func (m *dbMeta) Link(ctx Context, inode, parent Ino, name string, attr *Attr) syscall.Errno {
+	fmt.Println("### DB Link ###", inode, parent, name, "ctx:", ctx.Uid(), ctx.Gid())
 	defer timeit(time.Now())
 	parent = m.checkRoot(parent)
 	defer func() { m.of.InvalidateChunk(inode, 0xFFFFFFFE) }()
@@ -1832,6 +1849,7 @@ func (m *dbMeta) deleteInode(inode Ino) error {
 }
 
 func (m *dbMeta) Open(ctx Context, inode Ino, flags uint32, attr *Attr) syscall.Errno {
+	fmt.Println("### DB Open ###", inode, flags, "ctx:", ctx.Uid(), ctx.Gid())
 	if m.conf.ReadOnly && flags&(syscall.O_WRONLY|syscall.O_RDWR|syscall.O_TRUNC|syscall.O_APPEND) != 0 {
 		return syscall.EROFS
 	}
@@ -1849,6 +1867,7 @@ func (m *dbMeta) Open(ctx Context, inode Ino, flags uint32, attr *Attr) syscall.
 }
 
 func (m *dbMeta) Close(ctx Context, inode Ino) syscall.Errno {
+	fmt.Println("### DB Close ###", inode, "ctx:", ctx.Uid(), ctx.Gid())
 	if m.of.Close(inode) {
 		m.Lock()
 		defer m.Unlock()
@@ -1868,6 +1887,7 @@ func (m *dbMeta) Close(ctx Context, inode Ino) syscall.Errno {
 }
 
 func (m *dbMeta) Read(ctx Context, inode Ino, indx uint32, chunks *[]Slice) syscall.Errno {
+	fmt.Println("### DB Read ###", inode, indx, len(*chunks), "ctx:", ctx.Uid(), ctx.Gid())
 	f := m.of.find(inode)
 	if f != nil {
 		f.RLock()
@@ -1898,6 +1918,7 @@ func (m *dbMeta) Read(ctx Context, inode Ino, indx uint32, chunks *[]Slice) sysc
 func (m *dbMeta) NewChunk(ctx Context, inode Ino, indx uint32, offset uint32, chunkid *uint64) syscall.Errno {
 	m.freeMu.Lock()
 	defer m.freeMu.Unlock()
+	fmt.Printf("dbMeta.NewChunk: freeChunk.next=%d, freeChunk.maxid=%d\n", m.freeChunks.next, m.freeChunks.maxid)
 	if m.freeChunks.next >= m.freeChunks.maxid {
 		v, err := m.incrCounter("nextChunk", 1000)
 		if err != nil {
@@ -1905,6 +1926,7 @@ func (m *dbMeta) NewChunk(ctx Context, inode Ino, indx uint32, offset uint32, ch
 		}
 		m.freeChunks.next = v - 1000
 		m.freeChunks.maxid = v
+		fmt.Printf("dbMeta.NewChunk: v=%d, freeChunk.next=%d, freeChunk.maxid=%d\n", v, m.freeChunks.next, m.freeChunks.maxid)
 	}
 	*chunkid = m.freeChunks.next
 	m.freeChunks.next++
@@ -1912,11 +1934,13 @@ func (m *dbMeta) NewChunk(ctx Context, inode Ino, indx uint32, offset uint32, ch
 }
 
 func (m *dbMeta) InvalidateChunkCache(ctx Context, inode Ino, indx uint32) syscall.Errno {
+	fmt.Println("### DB InvalidateChunkCache ###", inode, indx, "ctx:", ctx.Uid(), ctx.Gid())
 	m.of.InvalidateChunk(inode, indx)
 	return 0
 }
 
 func (m *dbMeta) Write(ctx Context, inode Ino, indx uint32, off uint32, slice Slice) syscall.Errno {
+	fmt.Println("### DB Write ###", inode, indx, off, slice, "ctx:", ctx.Uid(), ctx.Gid())
 	defer timeit(time.Now())
 	f := m.of.find(inode)
 	if f != nil {
@@ -1984,6 +2008,7 @@ func (m *dbMeta) Write(ctx Context, inode Ino, indx uint32, off uint32, slice Sl
 }
 
 func (m *dbMeta) CopyFileRange(ctx Context, fin Ino, offIn uint64, fout Ino, offOut uint64, size uint64, flags uint32, copied *uint64) syscall.Errno {
+	fmt.Println("### DB CopyFileRange ###", fin, offIn, fout, offOut, size, *copied, "ctx:", ctx.Uid(), ctx.Gid())
 	defer timeit(time.Now())
 	f := m.of.find(fout)
 	if f != nil {
@@ -2362,6 +2387,7 @@ func dup(b []byte) []byte {
 }
 
 func (m *dbMeta) CompactAll(ctx Context) syscall.Errno {
+	fmt.Println("### DB CompactAll ###", "ctx:", ctx.Uid(), ctx.Gid())
 	var c chunk
 	rows, err := m.engine.Where("length(slices) >= ?", sliceBytes*2).Cols("inode", "indx").Rows(&c)
 	if err != nil {
@@ -2384,6 +2410,7 @@ func (m *dbMeta) CompactAll(ctx Context) syscall.Errno {
 }
 
 func (m *dbMeta) ListSlices(ctx Context, slices *[]Slice, delete bool, showProgress func()) syscall.Errno {
+	fmt.Println("### DB ListSlices ###", len(*slices), "ctx:", ctx.Uid(), ctx.Gid())
 	var c chunk
 	rows, err := m.engine.Rows(&c)
 	if err != nil {
@@ -2411,6 +2438,7 @@ func (m *dbMeta) ListSlices(ctx Context, slices *[]Slice, delete bool, showProgr
 }
 
 func (m *dbMeta) GetXattr(ctx Context, inode Ino, name string, vbuff *[]byte) syscall.Errno {
+	fmt.Println("### DB GetXattr ###", inode, name, "ctx:", ctx.Uid(), ctx.Gid())
 	defer timeit(time.Now())
 	inode = m.checkRoot(inode)
 	var x = xattr{Inode: inode, Name: name}
@@ -2426,6 +2454,7 @@ func (m *dbMeta) GetXattr(ctx Context, inode Ino, name string, vbuff *[]byte) sy
 }
 
 func (m *dbMeta) ListXattr(ctx Context, inode Ino, names *[]byte) syscall.Errno {
+	fmt.Println("### DB ListXattr ###", inode, string(*names), "ctx:", ctx.Uid(), ctx.Gid())
 	defer timeit(time.Now())
 	inode = m.checkRoot(inode)
 	var x = xattr{Inode: inode}
@@ -2447,6 +2476,7 @@ func (m *dbMeta) ListXattr(ctx Context, inode Ino, names *[]byte) syscall.Errno 
 }
 
 func (m *dbMeta) SetXattr(ctx Context, inode Ino, name string, value []byte, flags int) syscall.Errno {
+	fmt.Println("### DB SetXattr ###", inode, name, string(value), flags, "ctx:", ctx.Uid(), ctx.Gid())
 	if name == "" {
 		return syscall.EINVAL
 	}
@@ -2484,6 +2514,7 @@ func (m *dbMeta) SetXattr(ctx Context, inode Ino, name string, value []byte, fla
 }
 
 func (m *dbMeta) RemoveXattr(ctx Context, inode Ino, name string) syscall.Errno {
+	fmt.Println("### DB RemoveXattr ###", inode, name, "ctx:", ctx.Uid(), ctx.Gid())
 	if name == "" {
 		return syscall.EINVAL
 	}

@@ -16,6 +16,9 @@
 package main
 
 import (
+	"encoding/json"
+	"fmt"
+	"io/ioutil"
 	"net/http"
 	_ "net/http/pprof"
 	"os"
@@ -90,6 +93,283 @@ func mount(c *cli.Context) error {
 			readOnly = true
 		}
 	}
+	metaConf := &meta.Config{
+		Retries:     10,
+		Strict:      true,
+		CaseInsensi: strings.HasSuffix(mp, ":") && runtime.GOOS == "windows",
+		ReadOnly:    readOnly,
+		OpenCache:   time.Duration(c.Float64("open-cache") * 1e9),
+		MountPoint:  mp,
+		Subdir:      c.String("subdir"),
+	}
+	m := meta.NewClient(addr, metaConf)
+	format, err := m.Load()
+	if err != nil {
+		logger.Fatalf("load setting: %s", err)
+	}
+
+	metricLabels := prometheus.Labels{
+		"vol_name": format.Name,
+		"mp":       mp,
+	}
+	// Wrap the default registry, all prometheus.MustRegister() calls should be afterwards
+	prometheus.DefaultRegisterer = prometheus.WrapRegistererWith(metricLabels,
+		prometheus.WrapRegistererWithPrefix("juicefs_", prometheus.DefaultRegisterer))
+
+	if !c.Bool("writeback") && c.IsSet("upload-delay") {
+		logger.Warnf("delayed upload only work in writeback mode")
+	}
+
+	chunkConf := chunk.Config{
+		BlockSize: format.BlockSize * 1024,
+		Compress:  format.Compression,
+
+		GetTimeout:  time.Second * time.Duration(c.Int("get-timeout")),
+		PutTimeout:  time.Second * time.Duration(c.Int("put-timeout")),
+		MaxUpload:   c.Int("max-uploads"),
+		Writeback:   c.Bool("writeback"),
+		UploadDelay: c.Duration("upload-delay"),
+		Prefetch:    c.Int("prefetch"),
+		BufferSize:  c.Int("buffer-size") << 20,
+
+		CacheDir:       c.String("cache-dir"),
+		CacheSize:      int64(c.Int("cache-size")),
+		FreeSpace:      float32(c.Float64("free-space-ratio")),
+		CacheMode:      os.FileMode(0600),
+		CacheFullBlock: !c.Bool("cache-partial-only"),
+		AutoCreate:     true,
+	}
+
+	if chunkConf.CacheDir != "memory" {
+		ds := utils.SplitDir(chunkConf.CacheDir)
+		for i := range ds {
+			ds[i] = filepath.Join(ds[i], format.UUID)
+		}
+		chunkConf.CacheDir = strings.Join(ds, string(os.PathListSeparator))
+	}
+	blob, err := createStorage(format)
+	if err != nil {
+		logger.Fatalf("object storage: %s", err)
+	}
+	logger.Infof("Data use %s", blob)
+	blob = object.WithMetrics(blob)
+	blob = object.NewLimited(blob, c.Int64("upload-limit")*1e6/8, c.Int64("download-limit")*1e6/8)
+	store := chunk.NewCachedStore(blob, chunkConf)
+	m.OnMsg(meta.DeleteChunk, meta.MsgCallback(func(args ...interface{}) error {
+		chunkid := args[0].(uint64)
+		length := args[1].(uint32)
+		return store.Remove(chunkid, int(length))
+	}))
+	m.OnMsg(meta.CompactChunk, meta.MsgCallback(func(args ...interface{}) error {
+		slices := args[0].([]meta.Slice)
+		chunkid := args[1].(uint64)
+		return vfs.Compact(chunkConf, store, slices, chunkid)
+	}))
+	conf := &vfs.Config{
+		Meta:       metaConf,
+		Format:     format,
+		Version:    version.Version(),
+		Mountpoint: mp,
+		Chunk:      &chunkConf,
+	}
+	vfs.Init(conf, m, store)
+
+	if c.Bool("background") && os.Getenv("JFS_FOREGROUND") == "" {
+		if runtime.GOOS != "windows" {
+			d := c.String("cache-dir")
+			if d != "memory" && !strings.HasPrefix(d, "/") {
+				ad, err := filepath.Abs(d)
+				if err != nil {
+					logger.Fatalf("cache-dir should be absolute path in daemon mode")
+				} else {
+					for i, a := range os.Args {
+						if a == d || a == "--cache-dir="+d {
+							os.Args[i] = a[:len(a)-len(d)] + ad
+						}
+					}
+				}
+			}
+		}
+		sqliteScheme := "sqlite3://"
+		if strings.HasPrefix(addr, sqliteScheme) {
+			path := addr[len(sqliteScheme):]
+			path2, err := filepath.Abs(path)
+			if err == nil && path2 != path {
+				for i, a := range os.Args {
+					if a == addr {
+						os.Args[i] = sqliteScheme + path2
+					}
+				}
+			}
+		}
+		// The default log to syslog is only in daemon mode.
+		utils.InitLoggers(!c.Bool("no-syslog"))
+		err := makeDaemon(c, conf.Format.Name, conf.Mountpoint)
+		if err != nil {
+			logger.Fatalf("Failed to make daemon: %s", err)
+		}
+	} else {
+		go checkMountpoint(conf.Format.Name, mp)
+	}
+
+	err = m.NewSession()
+	if err != nil {
+		logger.Fatalf("new session: %s", err)
+	}
+	installHandler(mp)
+
+	meta.InitMetrics()
+	vfs.InitMetrics()
+	go metric.UpdateMetrics(m)
+	http.Handle("/metrics", promhttp.HandlerFor(
+		prometheus.DefaultGatherer,
+		promhttp.HandlerOpts{
+			// Opt into OpenMetrics to support exemplars.
+			EnableOpenMetrics: true,
+		},
+	))
+	prometheus.MustRegister(prometheus.NewBuildInfoCollector())
+	go func() {
+		err = http.ListenAndServe(c.String("metrics"), nil)
+		if err != nil {
+			logger.Errorf("listen and serve for metrics: %s", err)
+		}
+	}()
+
+	if !c.Bool("no-usage-report") {
+		go usage.ReportUsage(m, version.Version())
+	}
+	mount_main(conf, m, store, c)
+	return nil
+}
+
+func GetFs(token string) {
+
+}
+
+type FsConfig struct {
+	RootName   string
+	Storage    string
+	Region     string
+	Bucket     string
+	Partitions uint
+	Replicated bool
+	Compatible bool
+	BlockSize  uint
+	Master     string
+	MasterIp   string
+	Password   string
+	Compress   string
+	AccessKey  string
+	SecretKey  string
+	Tested     uint
+	Token      string
+}
+
+func DefaultFsConfig(rootName string) *FsConfig {
+	return &FsConfig{
+		RootName:  rootName,
+		Storage:   "s3",
+		Bucket:    "hufs-" + rootName,
+		BlockSize: 4096,
+		Master:    "localhost:3306",
+		MasterIp:  "127.0.0.1",
+		Password:  "123456",
+		Compress:  "none",
+	}
+}
+
+func GetMetaAddress(addr, fsName, password string) (string, error) {
+	// TODO: make by meta type
+	// TODO: modify to user name
+	fsName = "root"
+	return "mysql://" + fsName + ":" + password + "@(" + addr + ")/juicefs", nil
+}
+
+func SetupMountConfig(addr string, fsConf *FsConfig) (error) {
+	res, err := http.Post(addr+"/fs/"+fsConf.RootName+"/mount", "application/x-www-form-urlencoded", strings.NewReader("token="+fsConf.Token))
+	if err != nil {
+		return err
+	}
+	if res.StatusCode != http.StatusOK {
+		return fmt.Errorf("http status code is %d", res.StatusCode)
+	}
+	var data []byte
+	data, err = ioutil.ReadAll(res.Body)
+	if err != nil {
+		return err
+	}
+	defer res.Body.Close()
+	err = json.Unmarshal(data, &fsConf)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func inputToken(token *string) {
+	fmt.Println("Input your Token:")
+	fmt.Scanf("%s", token)
+}
+
+func rmount(c *cli.Context) error {
+	setLoggerLevel(c)
+	if c.Args().Len() < 1 {
+		logger.Fatalf("Meta URL and mountpoint are required")
+	}
+	fsname := c.Args().Get(0)
+	if c.Args().Len() < 2 {
+		logger.Fatalf("MOUNTPOINT is required")
+	}
+	var writeConf bool
+	var fsConf = new(FsConfig)
+	confFile := path.Join(c.String("conf"), fsname+".conf")
+	_, err := os.Stat(confFile)
+	if err != nil {
+		fsConf = DefaultFsConfig(fsname)
+		writeConf = true
+		//fmt.Println("Input your AccessKey:")
+		//fmt.Scanf("%s", &fsConf.AccessKey)
+		//fmt.Println("Input your SecretKey:")
+		//fmt.Scanf("%s", &fsConf.SecretKey)
+	} else {
+		data, err := os.ReadFile(confFile)
+		if err != nil {
+			panic(err)
+		}
+		err = json.Unmarshal(data, fsConf)
+		if err != nil {
+			panic(err)
+		}
+	}
+	if fsConf.Token == "" {
+		inputToken(&fsConf.Token)
+	}
+	// TODO: Validate local config
+	err = SetupMountConfig(c.String("remote"), fsConf)
+	if err != nil {
+		panic(err)
+	}
+	if writeConf {
+		data, _ := json.Marshal(fsConf)
+		err = os.WriteFile(confFile, data, 0644)
+		if err != nil {
+			panic(err)
+		}
+	}
+	mp := c.Args().Get(1)
+	if !strings.Contains(mp, ":") && !utils.Exists(mp) {
+		if err := os.MkdirAll(mp, 0777); err != nil {
+			logger.Fatalf("create %s: %s", mp, err)
+		}
+	}
+	var readOnly = c.Bool("read-only")
+	for _, o := range strings.Split(c.String("o"), ",") {
+		if o == "ro" {
+			readOnly = true
+		}
+	}
+	addr, _ := GetMetaAddress(fsConf.Master, fsname, fsConf.Password)
 	metaConf := &meta.Config{
 		Retries:     10,
 		Strict:      true,
@@ -358,6 +638,29 @@ func mountFlags() *cli.Command {
 		},
 	}
 	cmd.Flags = append(cmd.Flags, mount_flags()...)
+	cmd.Flags = append(cmd.Flags, clientFlags()...)
+	return cmd
+}
+
+func rmountFlags() *cli.Command {
+	cmd := &cli.Command{
+		Name:      "rmount",
+		Usage:     "mount a volume",
+		ArgsUsage: "META-URL MOUNTPOINT",
+		Action:    rmount,
+		Flags: []cli.Flag{
+			&cli.StringFlag{
+				Name:  "metrics",
+				Value: "127.0.0.1:9567",
+				Usage: "address to export metrics",
+			},
+			&cli.BoolFlag{
+				Name:  "no-usage-report",
+				Usage: "do not send usage report",
+			},
+		},
+	}
+	cmd.Flags = append(cmd.Flags, rmount_flags()...)
 	cmd.Flags = append(cmd.Flags, clientFlags()...)
 	return cmd
 }
