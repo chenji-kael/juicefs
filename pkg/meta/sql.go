@@ -178,7 +178,7 @@ func newSQLMeta(driver, addr string, conf *Config) (Meta, error) {
 		logger.Warnf("The latency to database is too high: %s", time.Since(start))
 	}
 
-	engine.SetTableMapper(names.NewPrefixMapper(engine.GetTableMapper(), "jfs_"))
+	engine.SetTableMapper(names.NewPrefixMapper(engine.GetTableMapper(), "hufs_"))
 	if conf.Retries == 0 {
 		conf.Retries = 30
 	}
@@ -211,16 +211,16 @@ func (m *dbMeta) Name() string {
 }
 
 func (m *dbMeta) updateCollate() {
-	if r, err := m.engine.Query("show create table jfs_edge"); err != nil {
-		logger.Fatalf("show table jfs_edge: %s", err.Error())
+	if r, err := m.engine.Query("show create table hufs_edge"); err != nil {
+		logger.Fatalf("show table hufs_edge: %s", err.Error())
 	} else {
 		createTable := string(r[0]["Create Table"])
 		// the default collate is case-insensitive
 		if !strings.Contains(createTable, "SET utf8mb4 COLLATE utf8mb4_bin") {
-			_, err := m.engine.Exec("alter table jfs_edge modify name varchar (255) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL")
+			_, err := m.engine.Exec("alter table hufs_edge modify name varchar (255) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL")
 			if err != nil && strings.Contains(err.Error(), "Error 1071: Specified key was too long; max key length is 767 bytes") {
 				// MySQL 5.6 supports key length up to 767 bytes, so reduce the length of name to 190 chars
-				_, err = m.engine.Exec("alter table jfs_edge modify name varchar (190) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL")
+				_, err = m.engine.Exec("alter table hufs_edge modify name varchar (190) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL")
 			}
 			if err != nil {
 				logger.Fatalf("update collate: %s", err)
@@ -611,7 +611,7 @@ func (m *dbMeta) flushStats() {
 		newInodes := atomic.SwapInt64(&m.newInodes, 0)
 		if newSpace != 0 || newInodes != 0 {
 			err := m.txn(func(s *xorm.Session) error {
-				_, err := s.Exec("UPDATE jfs_counter SET value=value+ CAST((CASE name WHEN 'usedSpace' THEN ? ELSE ? END) AS "+inttype+") WHERE name='usedSpace' OR name='totalInodes' ", newSpace, newInodes)
+				_, err := s.Exec("UPDATE hufs_counter SET value=value+ CAST((CASE name WHEN 'usedSpace' THEN ? ELSE ? END) AS "+inttype+") WHERE name='usedSpace' OR name='totalInodes' ", newSpace, newInodes)
 				return err
 			})
 			if err != nil && !strings.Contains(err.Error(), "attempt to write a readonly database") {
@@ -681,7 +681,7 @@ func (m *dbMeta) Lookup(ctx Context, parent Ino, name string, inode *Ino, attr *
 	parent = m.checkRoot(parent)
 	dbSession := m.engine.Table(&edge{})
 	if attr != nil {
-		dbSession = dbSession.Join("INNER", &node{}, "jfs_edge.inode=jfs_node.inode")
+		dbSession = dbSession.Join("INNER", &node{}, "hufs_edge.inode=hufs_node.inode")
 	}
 	nn := namedNode{node: node{Parent: parent}, Name: name}
 	exist, err := dbSession.Select("*").Get(&nn)
@@ -849,9 +849,9 @@ func (m *dbMeta) appendSlice(s *xorm.Session, inode Ino, indx uint32, buf []byte
 	var err error
 	driver := m.engine.DriverName()
 	if driver == "sqlite3" || driver == "postgres" {
-		r, err = s.Exec("update jfs_chunk set slices=slices || ? where inode=? AND indx=?", buf, inode, indx)
+		r, err = s.Exec("update hufs_chunk set slices=slices || ? where inode=? AND indx=?", buf, inode, indx)
 	} else {
-		r, err = s.Exec("update jfs_chunk set slices=concat(slices, ?) where inode=? AND indx=?", buf, inode, indx)
+		r, err = s.Exec("update hufs_chunk set slices=concat(slices, ?) where inode=? AND indx=?", buf, inode, indx)
 	}
 	if err == nil {
 		if n, _ := r.RowsAffected(); n == 0 {
@@ -1707,7 +1707,7 @@ func (m *dbMeta) Readdir(ctx Context, inode Ino, plus uint8, entries *[]*Entry) 
 	defer timeit(time.Now())
 	dbSession := m.engine.Table(&edge{})
 	if plus != 0 {
-		dbSession = dbSession.Join("INNER", &node{}, "jfs_edge.inode=jfs_node.inode")
+		dbSession = dbSession.Join("INNER", &node{}, "hufs_edge.inode=hufs_node.inode")
 	}
 	var nodes []namedNode
 	if err := dbSession.Find(&nodes, &edge{Parent: inode}); err != nil {
@@ -2078,7 +2078,7 @@ func (m *dbMeta) CopyFileRange(ctx Context, fin Ino, offIn uint64, fout Ino, off
 				return err
 			}
 			if s.Chunkid > 0 {
-				if _, err := ses.Exec("update jfs_chunk_ref set refs=refs+1 where chunkid = ? AND size = ?", s.Chunkid, s.Size); err != nil {
+				if _, err := ses.Exec("update hufs_chunk_ref set refs=refs+1 where chunkid = ? AND size = ?", s.Chunkid, s.Size); err != nil {
 					return err
 				}
 			}
@@ -2206,7 +2206,7 @@ func (m *dbMeta) deleteSlice(chunkid uint64, size uint32) {
 		logger.Warnf("delete chunk %d (%d bytes): %s", chunkid, size, err)
 	} else {
 		err = m.txn(func(ses *xorm.Session) error {
-			_, err = ses.Exec("delete from jfs_chunk_ref where chunkid=?", chunkid)
+			_, err = ses.Exec("delete from hufs_chunk_ref where chunkid=?", chunkid)
 			return err
 		})
 		if err != nil {
@@ -2228,7 +2228,7 @@ func (m *dbMeta) deleteChunk(inode Ino, indx uint32) error {
 		}
 		ss = readSliceBuf(c.Slices)
 		for _, s := range ss {
-			_, err = ses.Exec("update jfs_chunk_ref set refs=refs-1 where chunkid=? AND size=?", s.chunkid, s.size)
+			_, err = ses.Exec("update hufs_chunk_ref set refs=refs-1 where chunkid=? AND size=?", s.chunkid, s.size)
 			if err != nil {
 				return err
 			}
@@ -2338,7 +2338,7 @@ func (m *dbMeta) compactChunk(inode Ino, indx uint32, force bool) {
 			return err
 		}
 		for _, s := range ss {
-			if _, err := ses.Exec("update jfs_chunk_ref set refs=refs-1 where chunkid=? and size=?", s.chunkid, s.size); err != nil {
+			if _, err := ses.Exec("update hufs_chunk_ref set refs=refs-1 where chunkid=? and size=?", s.chunkid, s.size); err != nil {
 				return err
 			}
 		}

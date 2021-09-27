@@ -249,6 +249,7 @@ func GetFs(token string) {
 
 type FsConfig struct {
 	RootName   string
+	UUID       string
 	Storage    string
 	Region     string
 	Bucket     string
@@ -282,11 +283,11 @@ func DefaultFsConfig(rootName string) *FsConfig {
 func GetMetaAddress(addr, fsName, password string) (string, error) {
 	// TODO: make by meta type
 	// TODO: modify to user name
-	fsName = "root"
-	return "mysql://" + fsName + ":" + password + "@(" + addr + ")/juicefs", nil
+	dbName := "hufs_" + fsName
+	return "mysql://" + fsName + ":" + password + "@(" + addr + ")/" + dbName, nil
 }
 
-func SetupMountConfig(addr string, fsConf *FsConfig) (error) {
+func SetupMountConfig(addr string, fsConf *FsConfig) error {
 	res, err := http.Post(addr+"/fs/"+fsConf.RootName+"/mount", "application/x-www-form-urlencoded", strings.NewReader("token="+fsConf.Token))
 	if err != nil {
 		return err
@@ -307,9 +308,25 @@ func SetupMountConfig(addr string, fsConf *FsConfig) (error) {
 	return nil
 }
 
-func inputToken(token *string) {
-	fmt.Println("Input your Token:")
-	fmt.Scanf("%s", token)
+func fillInfo(fsConf *FsConfig) bool {
+	//TODO: Get info from os env
+	var needUpdate bool
+	if fsConf.Token == "" {
+		fmt.Println("Input your Token:")
+		fmt.Scanf("%s", &fsConf.Token)
+		needUpdate = true
+	}
+	if fsConf.AccessKey == "" {
+		fmt.Println("Input your AccessKey:")
+		fmt.Scanf("%s", &fsConf.AccessKey)
+		needUpdate = true
+	}
+	if fsConf.SecretKey == "" {
+		fmt.Println("Input your SecretKey:")
+		fmt.Scanf("%s", &fsConf.SecretKey)
+		needUpdate = true
+	}
+	return needUpdate
 }
 
 func rmount(c *cli.Context) error {
@@ -327,11 +344,6 @@ func rmount(c *cli.Context) error {
 	_, err := os.Stat(confFile)
 	if err != nil {
 		fsConf = DefaultFsConfig(fsname)
-		writeConf = true
-		//fmt.Println("Input your AccessKey:")
-		//fmt.Scanf("%s", &fsConf.AccessKey)
-		//fmt.Println("Input your SecretKey:")
-		//fmt.Scanf("%s", &fsConf.SecretKey)
 	} else {
 		data, err := os.ReadFile(confFile)
 		if err != nil {
@@ -342,15 +354,14 @@ func rmount(c *cli.Context) error {
 			panic(err)
 		}
 	}
-	if fsConf.Token == "" {
-		inputToken(&fsConf.Token)
-	}
+	writeConf = fillInfo(fsConf)
 	// TODO: Validate local config
 	err = SetupMountConfig(c.String("remote"), fsConf)
 	if err != nil {
 		panic(err)
 	}
 	if writeConf {
+		// TODO: need marshal intent?
 		data, _ := json.Marshal(fsConf)
 		err = os.WriteFile(confFile, data, 0644)
 		if err != nil {
@@ -380,9 +391,20 @@ func rmount(c *cli.Context) error {
 		Subdir:      c.String("subdir"),
 	}
 	m := meta.NewClient(addr, metaConf)
-	format, err := m.Load()
-	if err != nil {
-		logger.Fatalf("load setting: %s", err)
+	format := &meta.Format{
+		Name:        fsConf.RootName,
+		UUID:        fsConf.UUID,
+		Storage:     fsConf.Storage,
+		Bucket:      fsConf.Bucket,
+		AccessKey:   fsConf.AccessKey,
+		SecretKey:   fsConf.SecretKey,
+		BlockSize:   int(fsConf.BlockSize),
+		Compression: fsConf.Compress,
+		Shards:      0,
+		Partitions:  int(fsConf.Partitions),
+		Capacity:    0,
+		Inodes:      0,
+		EncryptKey:  "",
 	}
 
 	metricLabels := prometheus.Labels{
