@@ -391,21 +391,12 @@ func rmount(c *cli.Context) error {
 		Subdir:      c.String("subdir"),
 	}
 	m := meta.NewClient(addr, metaConf)
-	format := &meta.Format{
-		Name:        fsConf.RootName,
-		UUID:        fsConf.UUID,
-		Storage:     fsConf.Storage,
-		Bucket:      fsConf.Bucket,
-		AccessKey:   fsConf.AccessKey,
-		SecretKey:   fsConf.SecretKey,
-		BlockSize:   int(fsConf.BlockSize),
-		Compression: fsConf.Compress,
-		Shards:      0,
-		Partitions:  int(fsConf.Partitions),
-		Capacity:    0,
-		Inodes:      0,
-		EncryptKey:  "",
+	format, err := m.Load()
+	if err != nil {
+		panic(err)
 	}
+	format.AccessKey = fsConf.AccessKey
+	format.SecretKey = fsConf.SecretKey
 
 	metricLabels := prometheus.Labels{
 		"vol_name": format.Name,
